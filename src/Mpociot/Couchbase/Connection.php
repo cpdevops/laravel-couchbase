@@ -1,8 +1,10 @@
 <?php namespace Mpociot\Couchbase;
 
-use CouchbaseBucket;
-use CouchbaseCluster;
-use CouchbaseN1qlQuery;
+use \Couchbase\ClassicAuthenticator;
+use \Couchbase\Cluster;
+use \Couchbase\Bucket;
+use \Couchbase\N1qlQuery;
+use \Couchbase\N1qlIndex;
 
 class Connection extends \Illuminate\Database\Connection
 {
@@ -43,21 +45,24 @@ class Connection extends \Illuminate\Database\Connection
         // Build the connection string
         $dsn = $this->getDsn($config);
 
+        // Set bucket / database
+        $this->bucketname = $config['bucket'];
+
         // Create the connection
         $this->connection = $this->createConnection($dsn, $config);
-        
-        // Select database
-        $this->bucketname = $config['bucket'];
+        // $this->connection->manager(array_get($config, 'username'), array_get($config, 'password'));
+
+        // opens connection to bucket
         $this->bucket = $this->connection->openBucket($this->bucketname);
-        
-        // Enable N1QL for bucket
-        $this->bucket->enableN1ql($config['n1ql_hosts']);
+
+        // Check if Primary Index exists or not, If not then create one to prevent error
+        $this->checkOrCreatePrimaryIndex();
 
         $this->useDefaultPostProcessor();
 
         $this->useDefaultSchemaGrammar();
     }
-    
+
     /**
      * Get the default post processor instance.
      *
@@ -98,7 +103,7 @@ class Connection extends \Illuminate\Database\Connection
      *
      * @return mixed
      */
-    protected function executeQuery(CouchbaseN1qlQuery $query)
+    protected function executeQuery(\Couchbase\N1qlQuery $query)
     {
         return $this->bucket->query($query);
     }
@@ -113,7 +118,7 @@ class Connection extends \Illuminate\Database\Connection
                 return [];
             }
 
-            $query = CouchbaseN1qlQuery::fromString($query);
+            $query = \Couchbase\N1qlQuery::fromString($query);
             $query->consistency($this->consistency);
             $query->positionalParams($bindings);
 
@@ -172,7 +177,7 @@ class Connection extends \Illuminate\Database\Connection
             if ($this->pretending()) {
                 return 0;
             }
-            $query = \CouchbaseN1qlQuery::fromString($query);
+            $query = \Couchbase\N1qlQuery::fromString($query);
             $query->consistency($this->consistency);
             $query->namedParams(['parameters' => $bindings]);
             $result = $this->executeQuery($query);
@@ -194,7 +199,7 @@ class Connection extends \Illuminate\Database\Connection
             if ($this->pretending()) {
                 return 0;
             }
-            $query = CouchbaseN1qlQuery::fromString($query);
+            $query = \Couchbase\N1qlQuery::fromString($query);
             $query->consistency($this->consistency);
             $query->positionalParams($bindings);
             $result = $this->executeQuery($query);
@@ -265,7 +270,28 @@ class Connection extends \Illuminate\Database\Connection
      */
     protected function createConnection($dsn, array $config)
     {
-        return new CouchbaseCluster($dsn, array_get($config, 'username'), array_get($config, 'password'));
+        $authenticator = new \Couchbase\ClassicAuthenticator();
+        // if(array_get($config, 'username') != '' && array_get($config, 'password') != '') {
+        //     $authenticator->cluster(array_get($config, 'username'), array_get($config, 'password'));
+        // }
+        $authenticator->bucket(array_get($config, 'bucket'), array_get($config, 'bucket_password'));
+
+        $cluster = new \Couchbase\Cluster($dsn);
+        $cluster->authenticate($authenticator);
+        return $cluster;
+    }
+
+    protected function checkOrCreatePrimaryIndex()
+    {
+        $query = 'SELECT * FROM system:indexes WHERE `name` = "#primary" AND `keyspace_id` = "' . $this->bucketname . '";';
+        $query = \Couchbase\N1qlQuery::fromString($query);
+        $result = $this->executeQuery($query);
+
+        if(count($result->rows) != 1) {
+            $query = 'CREATE PRIMARY INDEX ON `'. $this->bucketname .'`;';
+            $query = \Couchbase\N1qlQuery::fromString($query);
+            $result = $this->executeQuery($query);
+        }
     }
 
     /**
